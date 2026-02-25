@@ -1,0 +1,11 @@
+venv*/
+logs/
+__pycache__/
+certificate/credentials.xml
+env.conf
+*.crt
+*.pb
+*.proto
+*.db
+.vscode/
+*.egg-info

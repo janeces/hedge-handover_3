@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "device_io"
+version = "0.1.0"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = "tests"
+pythonpath = "src"
+markers = [
+    "network: Tests that require network access",
+    "dtr_exe: Tests that require running either of the DTR executables",
+    "dythera: Tests that are particular to Dtyhera",
+    "trafoflex: Tests that are particular to Trafoflex"
+    ]

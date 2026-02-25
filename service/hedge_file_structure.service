@@ -1,0 +1,10 @@
+[Unit]
+Description=Creates the file structure required by the code in the tmp file
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/hedge_device_io/env.conf
+ExecStart=/usr/local/hedge_device_io/make_tmp_folders.sh
+
+[Install]
+WantedBy=multi-user.target

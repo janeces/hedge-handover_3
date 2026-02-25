@@ -1,0 +1,10 @@
+[Unit]
+Description=Generate and upload Trafoflex results to Sumo
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hedge_device_io/env.conf
+ExecStart=/usr/local/hedge_device_io/run_trafoflex.sh
+
+[Install]
+WantedBy=multi-user.target

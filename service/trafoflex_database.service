@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the Trafoflex database
+After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/hedge_device_io/env.conf
+ExecStartPre=/bin/sleep 60
+ExecStart=/usr/local/hedge_device_io/run_trafoflex_database.sh
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

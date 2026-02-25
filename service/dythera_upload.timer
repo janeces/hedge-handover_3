@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodically triggers computation and upload of Dythera results
+After=network.target
+
+[Timer]
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target

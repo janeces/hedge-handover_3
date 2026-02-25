@@ -1,0 +1,10 @@
+[Unit]
+Description=Generate and upload Dythera results to Sumo
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hedge_device_io/env.conf
+ExecStart=/usr/local/hedge_device_io/run_dythera.sh
+
+[Install]
+WantedBy=multi-user.target

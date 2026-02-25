@@ -1,0 +1,93 @@
+#!/bin/sh
+set -eu
+
+ETH_DEV="${ETH_DEV:-}"
+WWAN_DEV="${WWAN_DEV:-}"
+ETH_GW="${ETH_GW:-10.1.1.1}"
+WWAN_GW="${WWAN_GW:-100.67.147.193}"
+GSM_CTRL_DEV="${GSM_CTRL_DEV:-}"
+
+if [ -z "$WWAN_DEV" ]; then
+  GSM_CTRL_DEV="$(nmcli -t -f DEVICE,TYPE,STATE device status | awk -F: '$2=="gsm" && $1!="" && $1!="--" {print $1; exit}')"
+  if [ -n "$GSM_CTRL_DEV" ]; then
+    WWAN_DEV="$(nmcli -g GENERAL.IP-IFACE device show "$GSM_CTRL_DEV" | sed '/^$/d' | head -n1)"
+  fi
+fi
+
+if [ -z "$GSM_CTRL_DEV" ]; then
+  GSM_CTRL_DEV="$(nmcli -t -f DEVICE,TYPE,STATE device status | awk -F: '$2=="gsm" && $1!="" && $1!="--" {print $1; exit}')"
+fi
+
+if [ -z "$WWAN_DEV" ]; then
+  WWAN_DEV="$(ip -o link show | awk -F': ' '/(^| )wwan[0-9]+/ {print $2; exit}')"
+fi
+
+if [ -z "$ETH_DEV" ]; then
+  ETH_DEV="$(nmcli -t -f DEVICE,TYPE,STATE device status | awk -F: '$2=="ethernet" && $1!="" && $1!="--" {print $1; exit}')"
+fi
+
+if [ -z "$WWAN_DEV" ]; then
+  printf "[!] No active GSM/WWAN device detected on this host.\n"
+  printf "[!] Run this script on the gateway (for example: ssh root@10.1.1.111).\n"
+  exit 1
+fi
+
+if [ -z "$ETH_DEV" ]; then
+  printf "[!] No active ethernet device detected on this host.\n"
+  printf "[!] Set ETH_DEV manually if needed.\n"
+  exit 1
+fi
+
+printf "[+] Using interfaces: ETH_DEV=%s, WWAN_DEV=%s\n" "$ETH_DEV" "$WWAN_DEV"
+
+printf "[+] Applying temporary default route fix\n"
+ip route del default via "$ETH_GW" dev "$ETH_DEV" 2>/dev/null || true
+ip route replace default via "$WWAN_GW" dev "$WWAN_DEV" metric 50
+
+printf "[+] Verifying internet reachability\n"
+ping -c 4 8.8.8.8
+ping -c 4 pypi.org
+
+printf "[+] Detecting active NetworkManager profiles\n"
+LAN_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show --active | awk -F: '$2=="ethernet" && $3!="" {print $1; exit}')"
+CELL_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show --active | awk -F: '$2=="gsm" && $3!="" {print $1; exit}')"
+
+if [ -z "$LAN_NAME" ]; then
+  LAN_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show | awk -F: -v dev="$ETH_DEV" '$2=="ethernet" && $3==dev {print $1; exit}')"
+fi
+
+if [ -z "$LAN_NAME" ]; then
+  LAN_NAME="$(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="ethernet" {print $1; exit}')"
+fi
+
+if [ -z "$CELL_NAME" ] && [ -n "$GSM_CTRL_DEV" ]; then
+  CELL_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show | awk -F: -v dev="$GSM_CTRL_DEV" '$2=="gsm" && $3==dev {print $1; exit}')"
+fi
+
+if [ -z "$CELL_NAME" ]; then
+  CELL_NAME="$(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="gsm" {print $1; exit}')"
+fi
+
+if [ -z "$LAN_NAME" ]; then
+  printf "[!] Could not detect active ethernet profile. Set LAN_NAME manually.\n"
+  exit 1
+fi
+
+if [ -z "$CELL_NAME" ]; then
+  printf "[!] Could not detect active gsm profile. Set CELL_NAME manually.\n"
+  exit 1
+fi
+
+printf "[+] Using LAN profile: %s\n" "$LAN_NAME"
+printf "[+] Using CELL profile: %s\n" "$CELL_NAME"
+
+printf "[+] Making route preference persistent via NetworkManager\n"
+nmcli con mod "$LAN_NAME" ipv4.never-default yes ipv4.route-metric 300
+nmcli con mod "$CELL_NAME" ipv4.never-default no ipv4.route-metric 50
+nmcli con up "$CELL_NAME"
+nmcli con up "$LAN_NAME"
+
+printf "[+] Final route table\n"
+ip route
+
+printf "[+] Done\n"}

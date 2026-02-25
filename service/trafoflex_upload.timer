@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically triggers computation and upload of Trafoflex results
+After=network.target
+
+[Timer]
+# Wait for the database to activate and populate before gathering data
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target

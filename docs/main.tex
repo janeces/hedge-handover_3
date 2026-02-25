@@ -1,0 +1,75 @@
+\documentclass[11pt, utf8]{article}
+
+\usepackage[english]{babel}
+\usepackage{pdfpages}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{physics}
+\usepackage{mathtools} % For coloneqq
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage[capitalise,nameinlink]{cleveref}
+\usepackage{url}
+\usepackage{glossaries}
+\usepackage{biblatex}
+\usepackage{siunitx}
+\usepackage{float}
+\usepackage{fullpage}
+
+
+
+\graphicspath{{./figs/}}
+
+\begin{document}
+\pagenumbering{gobble}
+\begin{center}
+    \large \sc IoT Device Performance Report
+\end{center}
+
+We evaluated performance of Dythera and Trafoflex of an edge device, namely \href{https://www.iotmaxx.com/en/gateways-router-iotmaxx-produkte/gateways-iotmaxx-gmbh/maxx-gw4100-basic-gateway-lte-4g}{IoTmaxx's maxx GW4100} (hereafter device), with two ARM Cortex-A7 processors and \SI{1}{\giga\byte} RAM running Linux with Mainline Kernel. Its results were compared to those obtained on a laptop with an Intel i9-14900HX CPU (8 performance cores and 16 efficient cores) and \SI{32}{\giga\byte} RAM running Ubuntu 24.04.2 LTS.
+
+To ensure consistent performance both programs were executed consecutively multiple times to provide a constant load on the device and thereby indicate whether any thermal throttling occurred due to insufficient cooling. The testing environment was at the top of a server rack in a temperature controlled environment at $\sim \SI{20}{\celsius}$.
+
+The input parameters for Dythera were those of a stationary test and similarly Trafoflex simulated a \SI{50}{\hour} transformer loading test at a given ambient temperature. \Cref{fig:dy} shows the Dythera loading test for both the device and laptop with the \texttt{radial\_distribution} parameter either turned on or off. In all figures the $x$ axis indicates the amount of time each test was run for before its total running time was averaged to obtain the corresponding value indicated on the $y$ axis. By observing the results we can conclude that the performance on the device is comparable to that on the laptop. As expected, the laptop still outperforms the device by $1.3$ and $1.7$ times when the radial distribution setting is set to on and off, respectively.
+%
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{dy.pdf}
+    \vspace{-0.2cm}
+    \caption{\label{fig:dy} Loading test for the device and laptop running a stationary test on Dythera under sustained load.}
+\end{figure}
+%
+
+The test results for Trafoflex runs are shown in \cref{fig:tf} where the difference in performance is significant as the laptop is about 4 times faster than the device. The averaged execution times for the longest runs are presented in \cref{tbl} for a more quantitative assessment. Despite the device's Trafoflex results being slower than those obtained on a much more powerful laptop, the execution times are still well below the anticipated input data frequency which is on the order of minutes, meaning that the performance of the device is more than sufficient to be able to handle the incoming data stream indefinitely.
+
+\begin{table}[H]
+    \begin{center}
+        \caption{\label{tbl}Average execution times for Dythera and Trafoflex for different configurations.}
+        \begin{tabular}{ c | c c c }
+            \hline
+            Hardware & Dythera [s] & Dythera radial distribution [s] & Trafoflex [s] \\ 
+            \hline
+            device & 0.085 & 0.096 & 0.11\\  
+            laptop & 0.050 & 0.073 & 0.027\\
+            \hline
+        \end{tabular}
+    \end{center}
+\end{table}
+
+%
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{tf.pdf}
+    \vspace{-0.2cm}
+    \caption{\label{fig:tf} Loading test for the device and laptop running Trafoflex under sustained load.}
+\end{figure}
+%
+
+
+
+
+
+
+
+\end{document}
