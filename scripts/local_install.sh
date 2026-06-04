@@ -27,6 +27,9 @@ python3 -m venv venv
 printf "Creating virtual environment done.\n\n"
 
 source venv/bin/activate
+printf "Bootstrapping packaging tools in virtual environment.\n"
+python -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+
 printf "Installing the Python package.\n"
 pip install --no-build-isolation .
 if [ $? -ne 0 ]; then

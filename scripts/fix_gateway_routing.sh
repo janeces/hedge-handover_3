@@ -4,7 +4,7 @@ set -eu
 ETH_DEV="${ETH_DEV:-}"
 WWAN_DEV="${WWAN_DEV:-}"
 ETH_GW="${ETH_GW:-10.1.1.1}"
-WWAN_GW="${WWAN_GW:-100.67.147.193}"
+WWAN_GW="${WWAN_GW:-}"
 GSM_CTRL_DEV="${GSM_CTRL_DEV:-}"
 
 if [ -z "$WWAN_DEV" ]; then
@@ -42,11 +42,28 @@ printf "[+] Using interfaces: ETH_DEV=%s, WWAN_DEV=%s\n" "$ETH_DEV" "$WWAN_DEV"
 
 printf "[+] Applying temporary default route fix\n"
 ip route del default via "$ETH_GW" dev "$ETH_DEV" 2>/dev/null || true
+
+if [ -z "$WWAN_GW" ]; then
+  WWAN_GW="$(ip route show dev "$WWAN_DEV" | awk '/default/ {print $3; exit}')"
+fi
+if [ -z "$WWAN_GW" ]; then
+  WWAN_GW="$(ip route show dev "$WWAN_DEV" | awk 'NR==1 {print $1; exit}' | cut -d/ -f1 | awk -F. '{print $1"."$2"."$3".1"}')"
+fi
+if [ -z "$WWAN_GW" ]; then
+  printf "[!] Could not determine WWAN gateway. Set WWAN_GW manually.\n"
+  exit 1
+fi
+printf "[+] Using WWAN gateway: %s\n" "$WWAN_GW"
+
 ip route replace default via "$WWAN_GW" dev "$WWAN_DEV" metric 50
 
 printf "[+] Verifying internet reachability\n"
 ping -c 4 8.8.8.8
-ping -c 4 pypi.org
+if nslookup pypi.org > /dev/null 2>&1; then
+  ping -c 4 pypi.org
+else
+  printf "[!] DNS resolution not working yet (nslookup pypi.org failed). Continuing anyway.\n"
+fi
 
 printf "[+] Detecting active NetworkManager profiles\n"
 LAN_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show --active | awk -F: '$2=="ethernet" && $3!="" {print $1; exit}')"
@@ -60,6 +77,14 @@ if [ -z "$LAN_NAME" ]; then
   LAN_NAME="$(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="ethernet" {print $1; exit}')"
 fi
 
+if [ -z "$LAN_NAME" ]; then
+  LAN_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show --active | awk -F: -v dev="$ETH_DEV" '$3==dev {print $1; exit}')"
+fi
+
+if [ -z "$LAN_NAME" ]; then
+  LAN_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show | awk -F: -v dev="$ETH_DEV" '$3==dev {print $1; exit}')"
+fi
+
 if [ -z "$CELL_NAME" ] && [ -n "$GSM_CTRL_DEV" ]; then
   CELL_NAME="$(nmcli -t -f NAME,TYPE,DEVICE connection show | awk -F: -v dev="$GSM_CTRL_DEV" '$2=="gsm" && $3==dev {print $1; exit}')"
 fi
@@ -69,7 +94,9 @@ if [ -z "$CELL_NAME" ]; then
 fi
 
 if [ -z "$LAN_NAME" ]; then
-  printf "[!] Could not detect active ethernet profile. Set LAN_NAME manually.\n"
+  printf "[!] Could not detect ethernet profile. Available connections:\n"
+  nmcli -t -f NAME,TYPE,DEVICE connection show
+  printf "[!] Set LAN_NAME manually, e.g.: LAN_NAME=<name> %s\n" "$0"
   exit 1
 fi
 
@@ -83,11 +110,20 @@ printf "[+] Using CELL profile: %s\n" "$CELL_NAME"
 
 printf "[+] Making route preference persistent via NetworkManager\n"
 nmcli con mod "$LAN_NAME" ipv4.never-default yes ipv4.route-metric 300
-nmcli con mod "$CELL_NAME" ipv4.never-default no ipv4.route-metric 50
+nmcli con mod "$CELL_NAME" ipv4.never-default no ipv4.route-metric 50 ipv4.dns "8.8.8.8 8.8.4.4" ipv4.ignore-auto-dns no
 nmcli con up "$CELL_NAME"
 nmcli con up "$LAN_NAME"
+
+printf "[+] Verifying DNS\n"
+if nslookup sumo.operato.eu > /dev/null 2>&1; then
+  printf "[+] DNS resolution working.\n"
+else
+  printf "[!] DNS still not working. Forcing resolv.conf fallback.\n"
+  printf "nameserver 8.8.8.8\nnameserver 8.8.4.4\n" > /etc/resolv.conf
+  printf "[+] /etc/resolv.conf updated.\n"
+fi
 
 printf "[+] Final route table\n"
 ip route
 
-printf "[+] Done\n"}
+printf "[+] Done\n"
