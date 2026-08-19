@@ -186,7 +186,7 @@ if has_cmd systemctl && systemctl list-unit-files | awk '{print $1}' | grep -q '
 
   unit_text="$(systemctl cat tailscaled 2>/dev/null || true)"
   if [ -n "$unit_text" ]; then
-    exec_line="$(printf "%s\n" "$unit_text" | awk -F= '/^ExecStart=/{print $2; exit}')"
+    exec_line="$(printf "%s\n" "$unit_text" | awk '/^ExecStart=/{sub(/^ExecStart=/, "", $0); print; exit}')"
     if [ -n "$exec_line" ]; then
       printf "tailscaled ExecStart: %s\n" "$exec_line"
 
@@ -208,6 +208,7 @@ if has_cmd systemctl && systemctl list-unit-files | awk '{print $1}' | grep -q '
         }
       ')"
 
+      state_path_ok=0
       if [ -n "$state_path" ]; then
         case "$state_path" in
           mem:*)
@@ -219,6 +220,7 @@ if has_cmd systemctl && systemctl list-unit-files | awk '{print $1}' | grep -q '
               state_parent="."
             fi
             if [ -d "$state_parent" ] && [ -w "$state_parent" ]; then
+              state_path_ok=1
               report PASS "tailscaled state path is writable ($state_path)."
             elif [ -d "$state_parent" ]; then
               report WARN "tailscaled state directory exists but may not be writable ($state_parent)."
@@ -229,6 +231,7 @@ if has_cmd systemctl && systemctl list-unit-files | awk '{print $1}' | grep -q '
         esac
       elif [ -n "$state_dir" ]; then
         if [ -d "$state_dir" ] && [ -w "$state_dir" ]; then
+          state_path_ok=1
           report PASS "tailscaled statedir is writable ($state_dir)."
         elif [ -d "$state_dir" ]; then
           report WARN "tailscaled statedir exists but may not be writable ($state_dir)."
@@ -247,7 +250,11 @@ if has_cmd systemctl && systemctl list-unit-files | awk '{print $1}' | grep -q '
 
       ts_no_state_log="$(journalctl -u tailscaled -b --no-pager -n 120 2>/dev/null | grep -i 'no state directory' | tail -n1 || true)"
       if [ -n "$ts_no_state_log" ]; then
-        report WARN "tailscaled logs 'no state directory'; this can be benign for network-lock, but verify state path and permissions."
+        if [ "$state_path_ok" -eq 1 ]; then
+          report PASS "tailscaled logs 'no state directory' (likely network-lock related); configured state path looks healthy."
+        else
+          report WARN "tailscaled logs 'no state directory'; verify state path and permissions."
+        fi
       fi
     else
       report WARN "Could not parse tailscaled ExecStart line from systemd unit."

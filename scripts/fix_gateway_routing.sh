@@ -41,7 +41,11 @@ fi
 printf "[+] Using interfaces: ETH_DEV=%s, WWAN_DEV=%s\n" "$ETH_DEV" "$WWAN_DEV"
 
 printf "[+] Applying temporary default route fix\n"
-ip route del default via "$ETH_GW" dev "$ETH_DEV" 2>/dev/null || true
+
+# Remove any ethernet defaults so internet egress prefers WWAN.
+while ip route show default dev "$ETH_DEV" | grep -q '^default '; do
+  ip route del default dev "$ETH_DEV" 2>/dev/null || true
+done
 
 if [ -z "$WWAN_GW" ]; then
   WWAN_GW="$(ip route show dev "$WWAN_DEV" | awk '/default/ {print $3; exit}')"
@@ -55,6 +59,10 @@ if [ -z "$WWAN_GW" ]; then
 fi
 printf "[+] Using WWAN gateway: %s\n" "$WWAN_GW"
 
+# Remove duplicate WWAN defaults and keep a single preferred default route.
+while ip route show default dev "$WWAN_DEV" | grep -q '^default '; do
+  ip route del default dev "$WWAN_DEV" 2>/dev/null || true
+done
 ip route replace default via "$WWAN_GW" dev "$WWAN_DEV" metric 50
 
 printf "[+] Verifying internet reachability\n"
@@ -109,10 +117,31 @@ printf "[+] Using LAN profile: %s\n" "$LAN_NAME"
 printf "[+] Using CELL profile: %s\n" "$CELL_NAME"
 
 printf "[+] Making route preference persistent via NetworkManager\n"
-nmcli con mod "$LAN_NAME" ipv4.never-default yes ipv4.route-metric 300
+nmcli con mod "$LAN_NAME" ipv4.never-default yes ipv4.route-metric 300 ipv4.gateway ""
 nmcli con mod "$CELL_NAME" ipv4.never-default no ipv4.route-metric 50 ipv4.dns "8.8.8.8 8.8.4.4" ipv4.ignore-auto-dns no
 nmcli con up "$CELL_NAME"
 nmcli con up "$LAN_NAME"
+
+printf "[+] Re-applying default route cleanup after profile updates\n"
+while ip route show default dev "$ETH_DEV" | grep -q '^default '; do
+  ip route del default dev "$ETH_DEV" 2>/dev/null || true
+done
+
+# Keep at most one WWAN default route. Delete extras if present.
+wwan_defaults="$(ip route show default dev "$WWAN_DEV" || true)"
+if [ -n "$wwan_defaults" ]; then
+  idx=0
+  printf "%s\n" "$wwan_defaults" | while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    idx=$((idx + 1))
+    if [ "$idx" -gt 1 ]; then
+      ip route del $line 2>/dev/null || true
+    fi
+  done
+fi
+
+# Ensure there is one preferred default route via WWAN.
+ip route replace default via "$WWAN_GW" dev "$WWAN_DEV" metric 50
 
 printf "[+] Verifying DNS\n"
 if nslookup sumo.operato.eu > /dev/null 2>&1; then
@@ -125,5 +154,12 @@ fi
 
 printf "[+] Final route table\n"
 ip route
+
+default_count="$(ip route | awk '/^default /{c++} END{print c+0}')"
+if [ "$default_count" -eq 1 ]; then
+  printf "[+] Exactly one default route is configured.\n"
+else
+  printf "[!] Expected one default route, found %s.\n" "$default_count"
+fi
 
 printf "[+] Done\n"

@@ -13,7 +13,7 @@ fi
 
 mkdir -p "$OVERRIDE_DIR"
 
-exec_line="$(systemctl cat tailscaled 2>/dev/null | awk -F= '/^ExecStart=/{print $2; exit}' || true)"
+exec_line="$(systemctl cat tailscaled 2>/dev/null | awk '/^ExecStart=/{sub(/^ExecStart=/, "", $0); print; exit}' || true)"
 if [ -n "$exec_line" ]; then
   state_path="$(printf "%s\n" "$exec_line" | awk '
     {
