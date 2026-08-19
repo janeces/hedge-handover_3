@@ -1,12 +1,14 @@
 [Unit]
 Description=Run the Trafoflex database
-After=network.target
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
 Type=simple
 EnvironmentFile=/etc/hedge_device_io/env.conf
+ExecStartPre=/usr/local/hedge_device_io/wait_for_valid_time.sh
 ExecStartPre=/bin/sleep 60
 ExecStart=/usr/local/hedge_device_io/run_trafoflex_database.sh
 RestartSec=60

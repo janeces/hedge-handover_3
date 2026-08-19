@@ -13,13 +13,15 @@ import threading
 import time
 import logging
 import random  # For varied temperatures of the dummy temperature sensor
+import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from threading import Lock, Thread, Event
-from typing import Type, Any, List
+from typing import Type, Any, List, Callable
 from queue import Queue
 # Non-Python external
 import paho.mqtt.client as mqtt_client
+import serial
 import serial.rs485 as rs485
 # Non-package external
 from device_io.external import utils_rs485
@@ -582,6 +584,355 @@ class McSensorMqtt(McSensor):
             self.meas.copy_obj(self.temp_meas)
             self.first_time.set()
             self.write_lock.release()
+
+
+def _extract_latest_data_xml(payload: str) -> str:
+    """Extract the latest <data>...</data> XML block from a payload."""
+    start = payload.rfind("<data")
+    end = payload.rfind("</data>")
+    if start == -1 or end == -1 or end < start:
+        return payload
+    return payload[start:end + len("</data>")]
+
+
+class McSensorHttp(McSensor):
+    """Polls a URL that returns MC XML payload and stores the latest valid measurement."""
+    process: Thread
+
+    def __init__(self, url: str, control_unit: str | None = None, poll_interval: float = 5.0, timeout: float = 10.0):
+        super().__init__()
+        self.url = url
+        self.controlUnit = control_unit
+        self.poll_interval = poll_interval
+        self.timeout = timeout
+        self.process = Thread(target=self.receive_messages, daemon=True)
+
+    def _should_store(self) -> bool:
+        if self.temp_meas.part != self.message_part:
+            return False
+        if self.controlUnit is not None and self.temp_meas.controlUnit != self.controlUnit:
+            return False
+        return True
+
+    def receive_messages(self) -> None:
+        while True:
+            try:
+                with urllib.request.urlopen(self.url, timeout=self.timeout) as response:
+                    payload = response.read().decode(self.msg_encoding, errors="replace")
+                self.temp_meas.parse(_extract_latest_data_xml(payload))
+                if self._should_store():
+                    self.write_lock.acquire()
+                    self.meas.copy_obj(self.temp_meas)
+                    self.first_time.set()
+                    self.write_lock.release()
+            except Exception as e:
+                logger.error(f"Error receiving MC data over HTTP from {self.url}: {e}")
+            time.sleep(self.poll_interval)
+
+    def start(self) -> None:
+        self.process.start()
+
+
+class McSensorFile(McSensor):
+    """Polls a local file for MC XML payload updates and stores the latest valid measurement."""
+    process: Thread
+
+    def __init__(self, file_path: str, control_unit: str | None = None, poll_interval: float = 2.0):
+        super().__init__()
+        self.file_path = file_path
+        self.controlUnit = control_unit
+        self.poll_interval = poll_interval
+        self._last_mtime: float | None = None
+        self._reported_missing = False
+        self.process = Thread(target=self.receive_messages, daemon=True)
+
+    def _should_store(self) -> bool:
+        if self.temp_meas.part != self.message_part:
+            return False
+        if self.controlUnit is not None and self.temp_meas.controlUnit != self.controlUnit:
+            return False
+        return True
+
+    def receive_messages(self) -> None:
+        while True:
+            try:
+                mtime = os.path.getmtime(self.file_path)
+                if self._last_mtime is not None and mtime <= self._last_mtime:
+                    time.sleep(self.poll_interval)
+                    continue
+
+                self._last_mtime = mtime
+                self._reported_missing = False
+
+                with open(self.file_path, "r", encoding=self.msg_encoding) as f:
+                    payload = f.read()
+
+                self.temp_meas.parse(_extract_latest_data_xml(payload))
+                if self._should_store():
+                    self.write_lock.acquire()
+                    self.meas.copy_obj(self.temp_meas)
+                    self.first_time.set()
+                    self.write_lock.release()
+            except FileNotFoundError:
+                if not self._reported_missing:
+                    logger.warning(f"MC file not found: {self.file_path}")
+                    self._reported_missing = True
+            except Exception as e:
+                logger.error(f"Error receiving MC data from file {self.file_path}: {e}")
+            time.sleep(self.poll_interval)
+
+    def start(self) -> None:
+        self.process.start()
+
+
+class McSensorSerial(McSensor):
+    """Reads MC XML payload from a serial/TTY stream and stores the latest valid measurement."""
+    xml_end_string = b"</data>"
+    process: Thread
+
+    def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0, control_unit: str | None = None):
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.controlUnit = control_unit
+        self.comm = serial.Serial(port=self.port, baudrate=self.baudrate, timeout=self.timeout)
+        self.process = Thread(target=self.receive_messages, daemon=True)
+
+    def _should_store(self) -> bool:
+        if self.temp_meas.part != self.message_part:
+            return False
+        if self.controlUnit is not None and self.temp_meas.controlUnit != self.controlUnit:
+            return False
+        return True
+
+    def receive_messages(self) -> None:
+        buffer = b""
+        while True:
+            try:
+                chunk = self.comm.read(BUFF_LEN)
+                if not chunk:
+                    continue
+
+                buffer += chunk
+                while self.xml_end_string in buffer:
+                    end_idx = buffer.find(self.xml_end_string) + len(self.xml_end_string)
+                    payload = buffer[:end_idx].decode(self.msg_encoding, errors="replace")
+                    buffer = buffer[end_idx:]
+
+                    self.temp_meas.parse(_extract_latest_data_xml(payload))
+                    if self._should_store():
+                        self.write_lock.acquire()
+                        self.meas.copy_obj(self.temp_meas)
+                        self.first_time.set()
+                        self.write_lock.release()
+            except Exception as e:
+                logger.error(f"Error receiving MC data over serial from {self.port}: {e}")
+                time.sleep(1)
+
+    def start(self) -> None:
+        self.process.start()
+
+
+class McSensorTcpClient(McSensor):
+    """Connects to a remote TCP endpoint and reads MC XML stream."""
+    xml_end_string = b"</data>"
+    process: Thread
+
+    def __init__(self, host: str, port: int, connect_timeout: float = 10.0, read_timeout: float = 5.0,
+                 retry_sleep: float = 3.0, control_unit: str | None = None):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self.retry_sleep = retry_sleep
+        self.controlUnit = control_unit
+        self.process = Thread(target=self.receive_messages, daemon=True)
+
+    def _should_store(self) -> bool:
+        if self.temp_meas.part != self.message_part:
+            return False
+        if self.controlUnit is not None and self.temp_meas.controlUnit != self.controlUnit:
+            return False
+        return True
+
+    def _receive_from_socket(self, conn: socket.socket) -> None:
+        buffer = b""
+        while True:
+            chunk = conn.recv(BUFF_LEN)
+            if not chunk:
+                return
+
+            buffer += chunk
+            while self.xml_end_string in buffer:
+                end_idx = buffer.find(self.xml_end_string) + len(self.xml_end_string)
+                payload = buffer[:end_idx].decode(self.msg_encoding, errors="replace")
+                buffer = buffer[end_idx:]
+
+                self.temp_meas.parse(_extract_latest_data_xml(payload))
+                if self._should_store():
+                    self.write_lock.acquire()
+                    self.meas.copy_obj(self.temp_meas)
+                    self.first_time.set()
+                    self.write_lock.release()
+
+    def receive_messages(self) -> None:
+        while True:
+            try:
+                logger.info(f"Connecting to MC TCP source at {self.host}:{self.port}")
+                conn = socket.create_connection((self.host, self.port), timeout=self.connect_timeout)
+                conn.settimeout(self.read_timeout)
+                with conn:
+                    self._receive_from_socket(conn)
+                logger.warning(f"Disconnected from MC TCP source {self.host}:{self.port}")
+            except (TimeoutError, socket.timeout):
+                logger.warning(f"TCP read timeout for MC source {self.host}:{self.port}, reconnecting")
+            except Exception as e:
+                logger.error(f"Error receiving MC data over TCP from {self.host}:{self.port}: {e}")
+            time.sleep(self.retry_sleep)
+
+    def start(self) -> None:
+        self.process.start()
+
+
+class McSensorUdp(McSensor):
+    """Listens on UDP and parses MC XML payloads from datagrams."""
+    process: Thread
+
+    def __init__(self, host: str, port: int, timeout: float = 5.0, control_unit: str | None = None):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.controlUnit = control_unit
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((self.host, self.port))
+        self.sock.settimeout(self.timeout)
+        self.process = Thread(target=self.receive_messages, daemon=True)
+
+    def _should_store(self) -> bool:
+        if self.temp_meas.part != self.message_part:
+            return False
+        if self.controlUnit is not None and self.temp_meas.controlUnit != self.controlUnit:
+            return False
+        return True
+
+    def receive_messages(self) -> None:
+        while True:
+            try:
+                payload, _ = self.sock.recvfrom(BUFF_LEN)
+                xml_payload = _extract_latest_data_xml(payload.decode(self.msg_encoding, errors="replace"))
+                self.temp_meas.parse(xml_payload)
+                if self._should_store():
+                    self.write_lock.acquire()
+                    self.meas.copy_obj(self.temp_meas)
+                    self.first_time.set()
+                    self.write_lock.release()
+            except socket.timeout:
+                continue
+            except Exception as e:
+                logger.error(f"Error receiving MC data over UDP on {self.host}:{self.port}: {e}")
+
+    def start(self) -> None:
+        self.process.start()
+
+
+McSensorBuilder = Callable[[dict[str, Any]], McSensor]
+_MC_SENSOR_BUILDERS: dict[str, McSensorBuilder] = {}
+
+
+def register_mc_sensor_builder(interface_name: str, builder: McSensorBuilder) -> None:
+    """Register a factory that creates an MC sensor for a given interface name."""
+    _MC_SENSOR_BUILDERS[interface_name] = builder
+
+
+def create_mc_sensor(cfg: dict[str, Any]) -> McSensor:
+    """Create an MC sensor based on MC_INTERFACE in env configuration."""
+    mc_interface = cfg.get("MC_INTERFACE")
+    builder = _MC_SENSOR_BUILDERS.get(mc_interface)
+    if builder is None:
+        supported = ", ".join(sorted(_MC_SENSOR_BUILDERS.keys()))
+        raise ValueError(f"Unsupported MC interface: {mc_interface}. Supported interfaces: {supported}")
+    return builder(cfg)
+
+
+def _build_mc_sensor_net(cfg: dict[str, Any]) -> McSensor:
+    host = cfg.get("MC_HOSTNAME")
+    port = cfg.get("MC_PORT")
+    if host is None or port is None:
+        raise ValueError("MC_HOSTNAME and MC_PORT must be set for MC_INTERFACE=net")
+    return McSensorNet(host, int(port))
+
+
+def _build_mc_sensor_mqtt(cfg: dict[str, Any]) -> McSensor:
+    control_unit = cfg.get("MC_CONTROL_UNIT")
+    if control_unit is None:
+        raise ValueError("MC_CONTROL_UNIT must be set for MC_INTERFACE=mqtt")
+    broker, port, uname, pwd = import_credentials(CREDENTIALS_DIR)
+    mc_client = MQTTClient(broker, port, MC_TOPIC, uname, pwd, CERTIFICATE_DIR)
+    return McSensorMqtt(mc_client, control_unit)
+
+
+def _build_mc_sensor_http(cfg: dict[str, Any]) -> McSensor:
+    url = cfg.get("MC_HTTP_URL")
+    if not url:
+        raise ValueError("MC_HTTP_URL must be set for MC_INTERFACE=http")
+    poll_interval = float(cfg.get("MC_HTTP_POLL_INTERVAL") or 5)
+    timeout = float(cfg.get("MC_HTTP_TIMEOUT") or 10)
+    control_unit = cfg.get("MC_CONTROL_UNIT")
+    return McSensorHttp(url, control_unit=control_unit, poll_interval=poll_interval, timeout=timeout)
+
+
+def _build_mc_sensor_file(cfg: dict[str, Any]) -> McSensor:
+    file_path = cfg.get("MC_FILE_PATH")
+    if not file_path:
+        raise ValueError("MC_FILE_PATH must be set for MC_INTERFACE=file")
+    poll_interval = float(cfg.get("MC_FILE_POLL_INTERVAL") or 2)
+    control_unit = cfg.get("MC_CONTROL_UNIT")
+    return McSensorFile(file_path, control_unit=control_unit, poll_interval=poll_interval)
+
+
+def _build_mc_sensor_serial(cfg: dict[str, Any]) -> McSensor:
+    port = cfg.get("MC_SERIAL_PORT")
+    if not port:
+        raise ValueError("MC_SERIAL_PORT must be set for MC_INTERFACE=serial")
+    baudrate = int(cfg.get("MC_SERIAL_BAUDRATE") or 9600)
+    timeout = float(cfg.get("MC_SERIAL_TIMEOUT") or 1)
+    control_unit = cfg.get("MC_CONTROL_UNIT")
+    return McSensorSerial(port, baudrate=baudrate, timeout=timeout, control_unit=control_unit)
+
+
+def _build_mc_sensor_tcp_client(cfg: dict[str, Any]) -> McSensor:
+    host = cfg.get("MC_TCP_HOSTNAME")
+    port = cfg.get("MC_TCP_PORT")
+    if not host or not port:
+        raise ValueError("MC_TCP_HOSTNAME and MC_TCP_PORT must be set for MC_INTERFACE=tcp-client")
+    connect_timeout = float(cfg.get("MC_TCP_CONNECT_TIMEOUT") or 10)
+    read_timeout = float(cfg.get("MC_TCP_READ_TIMEOUT") or 5)
+    retry_sleep = float(cfg.get("MC_TCP_RETRY_SLEEP") or 3)
+    control_unit = cfg.get("MC_CONTROL_UNIT")
+    return McSensorTcpClient(host, int(port), connect_timeout=connect_timeout, read_timeout=read_timeout,
+                             retry_sleep=retry_sleep, control_unit=control_unit)
+
+
+def _build_mc_sensor_udp(cfg: dict[str, Any]) -> McSensor:
+    host = cfg.get("MC_UDP_HOSTNAME")
+    port = cfg.get("MC_UDP_PORT")
+    if not host or not port:
+        raise ValueError("MC_UDP_HOSTNAME and MC_UDP_PORT must be set for MC_INTERFACE=udp")
+    timeout = float(cfg.get("MC_UDP_TIMEOUT") or 5)
+    control_unit = cfg.get("MC_CONTROL_UNIT")
+    return McSensorUdp(host, int(port), timeout=timeout, control_unit=control_unit)
+
+
+register_mc_sensor_builder(MC_INTERFACE_NET, _build_mc_sensor_net)
+register_mc_sensor_builder(MC_INTERFACE_MQTT, _build_mc_sensor_mqtt)
+register_mc_sensor_builder(MC_INTERFACE_HTTP, _build_mc_sensor_http)
+register_mc_sensor_builder(MC_INTERFACE_FILE, _build_mc_sensor_file)
+register_mc_sensor_builder(MC_INTERFACE_SERIAL, _build_mc_sensor_serial)
+register_mc_sensor_builder(MC_INTERFACE_TCP_CLIENT, _build_mc_sensor_tcp_client)
+register_mc_sensor_builder(MC_INTERFACE_UDP, _build_mc_sensor_udp)
 
 
 class WeatherStation(Sensor):

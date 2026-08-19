@@ -20,6 +20,15 @@ mkdir -p $SCRIPT_PATH
 cp scripts/run_${tr_type}.sh $SCRIPT_PATH/.
 cp scripts/run_${tr_type}_database.sh $SCRIPT_PATH/.
 cp scripts/make_tmp_folders.sh $SCRIPT_PATH/.
+cp scripts/wait_for_valid_time.sh $SCRIPT_PATH/.
+cp scripts/install_tailscale_time_override.sh $SCRIPT_PATH/.
+cp scripts/gateway_diagnostics.sh $SCRIPT_PATH/.
+
+chmod +x $SCRIPT_PATH/wait_for_valid_time.sh
+chmod +x $SCRIPT_PATH/install_tailscale_time_override.sh
+chmod +x $SCRIPT_PATH/gateway_diagnostics.sh
+
+$SCRIPT_PATH/install_tailscale_time_override.sh || true
 
 systemctl daemon-reload
 # Establish the /tmp filesystem

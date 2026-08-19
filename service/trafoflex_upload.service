@@ -1,9 +1,12 @@
 [Unit]
 Description=Generate and upload Trafoflex results to Sumo
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/hedge_device_io/env.conf
+ExecStartPre=/usr/local/hedge_device_io/wait_for_valid_time.sh
 ExecStart=/usr/local/hedge_device_io/run_trafoflex.sh
 
 [Install]

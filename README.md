@@ -89,6 +89,74 @@ If the gateway has a SIM connection but no internet due to route priority, run:
 ```
 This executes [`scripts/fix_gateway_routing.sh`](scripts/fix_gateway_routing.sh) on the gateway over SSH using credentials from [`config/env.conf`](config/env.conf).
 
+### Boot-time clock guard for TLS services
+
+To prevent failures when the gateway boots with an invalid date/time (for example after RTC drift),
+installation now deploys:
+
+- `scripts/wait_for_valid_time.sh` to `/usr/local/hedge_device_io/`.
+- A `tailscaled` systemd drop-in at `/etc/systemd/system/tailscaled.service.d/10-wait-valid-time.conf`.
+
+The script blocks startup until UTC year is at least `MIN_VALID_YEAR` (default `2024`) and returns an error after
+`MAX_WAIT_SECONDS` (default `300`).
+
+The following services now wait for valid time before starting:
+- `dythera_database.service`
+- `dythera_upload.service`
+- `trafoflex_database.service`
+- `trafoflex_upload.service`
+
+Environment variables can tune behavior globally if needed:
+
+```bash
+MIN_VALID_YEAR=2024
+MAX_WAIT_SECONDS=300
+SLEEP_SECONDS=5
+```
+
+### Gateway diagnostics
+
+Run a one-shot diagnostics check on the gateway to validate clock, time sync, routing, DNS, internet reachability,
+and Tailscale:
+
+```bash
+./scripts/gateway_diagnostics.sh
+```
+
+After installation, the same script is also available at:
+
+```bash
+/usr/local/hedge_device_io/gateway_diagnostics.sh
+```
+
+To run diagnostics remotely from your local machine via SSH credentials in `config/env.conf`:
+
+```bash
+./scripts/run_gateway_diagnostics_remote.sh
+```
+
+You can also pass credentials explicitly:
+
+```bash
+./scripts/run_gateway_diagnostics_remote.sh <host_user> <host_ip_or_name> <host_password>
+```
+
+The wrapper forwards the remote exit code and prints a compact result line:
+- `PASS` for `0`
+- `WARN` for `1`
+- `FAIL` for `2`
+
+Exit codes:
+- `0`: all checks passed
+- `1`: warnings present, no hard failures
+- `2`: one or more hard failures
+
+Notes:
+- A warning about multiple default routes means routing priority may be unstable and can affect connectivity.
+- On non-systemd-timesyncd setups, the diagnostics also attempts `chronyc` or `ntpq` checks when available.
+- If `tailscale` CLI is missing but `tailscaled` is active, diagnostics are still useful but less detailed.
+- Diagnostics inspects `tailscaled` `ExecStart` and warns when `--state` uses memory or when state path is non-standard.
+
 - Getting protobuffer's `pb2.py` files is done by using the [`proto_to_py.sh`](scripts/proto_to_py.sh) script, but this is only 
   needed if 
   the protobuffer version changes (the Python protobuffer library and `protoc` generated protobuffer files need to be compatible)
