@@ -210,3 +210,64 @@ run.
 
 At some point the device and ninestein became unable to acces `sumo.operato.eu` over MQTT so 
 [`scripts/tunnel_to_MQTT.sh`](scripts/tunnel_to_MQTT.sh) was implemented to enable access through the user's machine.
+
+## Recommended order (Tailscale -> Hedge app -> fixes)
+
+Use this order on a fresh gateway or after a broken network/time setup.
+
+1. Prepare configuration files locally
+  - Verify [`config/env.conf`](config/env.conf) has correct host/user/password, `BASE_PATH`, and paths.
+  - Verify MQTT credentials/certificate in [`certificate`](certificate).
+
+2. Ensure Tailscale is installed on the gateway and can run
+  - Service should exist: `tailscaled.service`.
+  - If needed, test remotely:
+  ```bash
+  sshpass -p '<pwd>' ssh <user>@<host> "systemctl status tailscaled --no-pager"
+  ```
+
+3. Deploy the project to the gateway
+  - Preferred: run installer from repository root:
+  ```bash
+  ./install_fixed.sh <d|t>
+  ```
+  - This installs Python package, services, and startup scripts.
+
+4. Apply the Tailscale time/state guard
+  - Run on gateway (or over SSH):
+  ```bash
+  ./scripts/install_tailscale_time_override.sh
+  ```
+  - This installs a tailscaled drop-in, ensures state directory, and adds boot-time valid-time prechecks.
+
+5. Fix route priority (if SIM is present but connectivity is unstable)
+  - From local machine:
+  ```bash
+  ./scripts/run_fix_gateway_routing_remote.sh <user> <host> <pwd>
+  ```
+  - This enforces WWAN default route preference and removes conflicting ethernet defaults.
+
+6. Run diagnostics and interpret result
+  - From local machine:
+  ```bash
+  ./scripts/run_gateway_diagnostics_remote.sh <user> <host> <pwd>
+  ```
+  - Exit code meanings:
+    - `0`: fully healthy
+    - `1`: warning(s) only
+    - `2`: hard failure
+
+7. Verify Tailscale connectivity explicitly
+  - Some systems use `/opt/bin/tailscale`:
+  ```bash
+  sshpass -p '<pwd>' ssh <user>@<host> "/opt/bin/tailscale status || tailscale status"
+  ```
+
+8. If scripts were updated locally after initial install
+  - Re-sync only scripts and re-run steps 4-6:
+  ```bash
+  sshpass -p '<pwd>' rsync -av -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" ./scripts/*.sh <user>@<host>:$BASE_PATH/scripts/
+  ```
+
+Practical note:
+- If command says `not found`, use `./script_name.sh` and run it from the correct folder.

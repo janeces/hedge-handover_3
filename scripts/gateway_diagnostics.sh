@@ -23,6 +23,16 @@ has_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+tailscale_cmd() {
+  if has_cmd tailscale; then
+    printf "tailscale"
+  elif [ -x /opt/bin/tailscale ]; then
+    printf "/opt/bin/tailscale"
+  else
+    printf ""
+  fi
+}
+
 section() {
   printf "\n=== %s ===\n" "$1"
 }
@@ -58,7 +68,7 @@ if has_cmd timedatectl; then
     report WARN "timedatectl does not confirm synchronized clock."
   fi
 else
-  report WARN "timedatectl not available; trying alternative NTP checks."
+  report "INFO" "timedatectl not available; trying alternative NTP checks."
   if has_cmd chronyc; then
     ch_out="$(chronyc tracking 2>/dev/null || true)"
     if [ -n "$ch_out" ]; then
@@ -83,6 +93,8 @@ else
     else
       report WARN "ntpq is present but returned no peer data."
     fi
+  else
+    report WARN "No alternative NTP client found (chronyc/ntpq)."
   fi
 fi
 
@@ -132,7 +144,12 @@ if has_cmd ip; then
   if [ "$default_count" -eq 1 ]; then
     report PASS "Exactly one default route exists."
   elif [ "$default_count" -gt 1 ]; then
-    report WARN "Multiple default routes detected ($default_count); route preference may be unstable."
+    unique_defaults="$(printf "%s\n" "$routes" | awk '/^default /{print}' | sort -u | wc -l | tr -d ' ')"
+    if [ "$unique_defaults" -eq 1 ]; then
+      report PASS "Multiple default rows are identical ($default_count entries); effective route is stable."
+    else
+      report WARN "Multiple different default routes detected ($default_count); route preference may be unstable."
+    fi
   else
     report FAIL "No default route present."
   fi
@@ -266,10 +283,15 @@ else
   report WARN "tailscaled service not found."
 fi
 
-if has_cmd tailscale; then
-  ts_status="$(tailscale status 2>/dev/null || true)"
+ts_cmd="$(tailscale_cmd)"
+if [ -n "$ts_cmd" ]; then
+  ts_connected=0
+  ts_status="$($ts_cmd status 2>/dev/null || true)"
   if [ -n "$ts_status" ]; then
     printf "%s\n" "$ts_status"
+    if printf "%s\n" "$ts_status" | awk 'NF > 0 && $NF != "offline" {found=1} END{exit(found?0:1)}'; then
+      ts_connected=1
+    fi
     if printf "%s" "$ts_status" | grep -qi "logged out\|stopped\|not connected\|error"; then
       report WARN "tailscale status indicates not fully connected."
     else
@@ -279,12 +301,16 @@ if has_cmd tailscale; then
     report WARN "tailscale status produced no output."
   fi
 
-  ts_json="$(tailscale status --json 2>/dev/null || true)"
+  ts_json="$($ts_cmd status --json 2>/dev/null || true)"
   if [ -n "$ts_json" ]; then
     if printf "%s" "$ts_json" | grep -q '"BackendState":"Running"'; then
       report PASS "tailscale backend state is Running."
     else
-      report WARN "tailscale backend not Running (see JSON output with tailscale status --json)."
+      if [ "$ts_connected" -eq 1 ]; then
+        report "INFO" "tailscale JSON backend state is not Running, but textual status shows active connectivity."
+      else
+        report WARN "tailscale backend not Running (see JSON output with tailscale status --json)."
+      fi
     fi
   fi
 else

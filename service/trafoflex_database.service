@@ -11,6 +11,7 @@ EnvironmentFile=/etc/hedge_device_io/env.conf
 ExecStartPre=/usr/local/hedge_device_io/wait_for_valid_time.sh
 ExecStartPre=/bin/sleep 60
 ExecStart=/usr/local/hedge_device_io/run_trafoflex_database.sh
+Restart=on-failure
 RestartSec=60
 
 [Install]

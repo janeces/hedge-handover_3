@@ -5,6 +5,8 @@ SCRIPT_PATH="${SCRIPT_PATH:-/usr/local/hedge_device_io}"
 OVERRIDE_DIR="/etc/systemd/system/tailscaled.service.d"
 OVERRIDE_FILE="$OVERRIDE_DIR/10-wait-valid-time.conf"
 TS_STATE_DIR="/var/lib/tailscale"
+LOCAL_SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WAIT_SCRIPT_PATH="$SCRIPT_PATH/wait_for_valid_time.sh"
 
 if ! systemctl list-unit-files | awk '{print $1}' | grep -q '^tailscaled.service$'; then
   printf "[tailscale-time-guard] tailscaled.service not found. Skipping override.\n"
@@ -52,13 +54,29 @@ if [ -n "$TS_STATE_DIR" ] && [ "$TS_STATE_DIR" != "mem:" ]; then
   chmod 700 "$TS_STATE_DIR" || true
 fi
 
+if [ ! -x "$WAIT_SCRIPT_PATH" ]; then
+  if [ -f "$LOCAL_SCRIPT_DIR/wait_for_valid_time.sh" ]; then
+    mkdir -p "$SCRIPT_PATH"
+    cp "$LOCAL_SCRIPT_DIR/wait_for_valid_time.sh" "$WAIT_SCRIPT_PATH"
+    chmod +x "$WAIT_SCRIPT_PATH"
+    printf "[tailscale-time-guard] Installed wait script at %s\n" "$WAIT_SCRIPT_PATH"
+  else
+    printf "[tailscale-time-guard] Warning: wait script not found at %s or %s\n" "$WAIT_SCRIPT_PATH" "$LOCAL_SCRIPT_DIR/wait_for_valid_time.sh"
+  fi
+fi
+
+WAIT_GUARD_LINE=""
+if [ -x "$WAIT_SCRIPT_PATH" ]; then
+  WAIT_GUARD_LINE="ExecStartPre=$WAIT_SCRIPT_PATH"
+fi
+
 cat > "$OVERRIDE_FILE" <<EOF
 [Unit]
 After=network-online.target time-sync.target
 Wants=network-online.target time-sync.target
 
 [Service]
-ExecStartPre=$SCRIPT_PATH/wait_for_valid_time.sh
+$WAIT_GUARD_LINE
 ExecStartPre=/bin/mkdir -p $TS_STATE_DIR
 ExecStartPre=/bin/chmod 700 $TS_STATE_DIR
 EOF
